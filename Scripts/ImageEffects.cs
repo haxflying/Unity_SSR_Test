@@ -17,6 +17,8 @@ public class ImageEffects : MonoBehaviour {
     public int bs_it_count = 5;
     [Range(0, 1f)]
     public float stepSize;
+    [Range(1f, 50f)]
+    public float maxLength = 10;
 
     private Material mat;
 
@@ -37,7 +39,8 @@ public class ImageEffects : MonoBehaviour {
         else
         {
             mat.SetInt("MAX_IT_COUNT", it_count);
-            mat.SetInt("MAX_BS_IT", bs_it_count);
+            mat.SetInt("MAX_BS_IT", bs_it_count); 
+            mat.SetFloat("_MaxLength", maxLength);
             mat.SetFloat("EPSION", epsion);
             mat.SetFloat("_StepSize", stepSize);
             mat.SetMatrix("_NormalMatrix", Camera.current.worldToCameraMatrix);

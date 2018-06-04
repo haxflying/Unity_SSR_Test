@@ -39,10 +39,11 @@ Shader "Hidden/SSR"
 				float4 test1 : TEXCOORD3;
 			};
 
-			#define MAX_TRACE_DIS 50
-			#define MAX_IT_COUNT 10
+			#define MAX_IT_COUNT 60
 			#define MAX_BS_IT 5			
 			uniform float EPSION;
+			uniform float _StepSize;
+			uniform float _MaxLength;
 			sampler2D _CameraGBufferTexture0;// Diffuse RGB, Occlusion A
 			sampler2D _CameraGBufferTexture1;// Specular RGB, Smoothness A
 			sampler2D _CameraGBufferTexture2;// Normal RGB
@@ -60,6 +61,7 @@ Shader "Hidden/SSR"
 			}
 			
 			sampler2D _MainTex;
+			float4 _MainTex_TexelSize;
 
 			float2 PosToUV(float3 vpos)
 			{
@@ -85,7 +87,7 @@ Shader "Hidden/SSR"
 				for (float i = 1; i <= MAX_IT_COUNT; ++i)
 				{
 					end = o + r * stepSize * i;
-					if(stepSize * i > MAX_TRACE_DIS)
+					if(stepSize * i > _MaxLength)
 						return false;
 
 					bool isInside = true;
@@ -102,7 +104,7 @@ Shader "Hidden/SSR"
 				return false;
 			}
 
-			uniform float _StepSize;
+			
 
 			bool BinarySearch(float3 o, float3 r, out float3 hitp, out float debug)
 			{
@@ -134,6 +136,78 @@ Shader "Hidden/SSR"
 				return false;
 			}
 
+			inline void swapIfBigger(inout float aa, inout float bb)
+			{
+				if(aa > bb)
+				{
+					float tmp = aa;
+					aa = bb;
+					bb = tmp;
+				}
+			}
+
+			inline bool isIntersectWithDepth(float zb, float3 worldnormal, float2 hitPixel)
+			{
+				//0 > za > zb
+				float depth = tex2D (_CameraDepthTexture, hitPixel * 0.5 + 0.5);
+    			depth = LinearEyeDepth (depth);
+    			//return ((za + depth) * (depth + zb)) < 0;
+    			float3 pNormal = tex2D (_CameraGBufferTexture2, hitPixel * 0.5 + 0.5).xyz * 2.0 - 1.0;
+    			//normal = mul(unity_WorldToObject, float4(normal, 0));
+    			return abs(zb + depth) < EPSION && dot(worldnormal, pNormal) < 0.9;
+			}
+
+			bool DDARayTrace(float3 o, float3 r, float3 normal, float jitter, out float2 hitPixel)
+			{
+				//Clip to near plane
+				float rayLength = ((o.z + r.z * _MaxLength) > -_ProjectionParams.y) ?
+				(-_ProjectionParams.y - o.z) / r.z : _MaxLength;
+				float3 end = o + r * _MaxLength;
+
+				float4 h0 = mul(unity_CameraProjection, float4(o, 1));
+				float4 h1 = mul(unity_CameraProjection, float4(end, 1));
+
+				float k0 = 1/h0.w, k1 = 1/h1.w;
+
+				//screen space
+				float2 p0 = h0.xy * k0, p1 = h1.xy * k1;
+
+				//DDA
+				float2 delta = p1 - p0;
+				bool permute = false;
+				if(abs(delta.x) < abs(delta.y))
+				{
+					permute = true;
+					delta = delta.yx;
+					p0 = p0.yx;
+					p1 = p1.yx;
+				}
+
+				float stepDir = sign(delta.x);
+				float invdx = stepDir / delta.x;
+
+				//derivatives
+				float dk = (k1 - k0) * invdx * _StepSize ;
+				float2 dp = float2(stepDir, delta.y * invdx) * _StepSize ;
+
+				float pixelSize = min(_MainTex_TexelSize.x, _MainTex_TexelSize.y);				
+
+				bool intersect = false;
+				float za = 0, zb = 0;
+				jitter = jitter;
+				float2 p = p0 + jitter * dp;
+				float k = k0 + jitter * dk;
+				for (int i = 0; i < MAX_IT_COUNT && intersect == false; ++i)
+				{
+					p += dp;
+					k += dk;
+					zb = -1/k;
+					hitPixel = permute? p.yx : p;
+					intersect = isIntersectWithDepth(zb, normal, hitPixel);
+				}
+				return intersect;
+			}
+
 			bool rayTrace1(float3 o, float3 r, out float3 hitp, out float debug)
 			{
 				float3 start = o;
@@ -142,7 +216,7 @@ Shader "Hidden/SSR"
 				for (int i = 1; i <= MAX_IT_COUNT; ++i)
 				{
 					end = o + r * stepSize * i;
-					if(length(end - start) > MAX_TRACE_DIS)
+					if(length(end - start) > _MaxLength)
 						return false;
 
 					bool isInside = true;
@@ -163,7 +237,7 @@ Shader "Hidden/SSR"
 				}
 				return false;
 			}
-
+			
 			fixed4 frag (v2f i) : SV_Target
 			{
 				fixed4 col = tex2D(_MainTex, i.uv);
@@ -171,19 +245,22 @@ Shader "Hidden/SSR"
 				float depth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, i.uv);
     			depth = Linear01Depth (depth);
     			float3 view_pos = i.rayDirVS.xyz/i.rayDirVS.w * depth;  			   				
-    			float3 normal = tex2D (_CameraGBufferTexture2, i.uv).xyz * 2.0 - 1.0;
+    			float3 wnormal = tex2D (_CameraGBufferTexture2, i.uv).xyz * 2.0 - 1.0;
     			//normal = mul(unity_WorldToObject, float4(normal, 0));
-    			normal = mul((float3x3)_NormalMatrix, normal);
+    			float3 normal = mul((float3x3)_NormalMatrix, wnormal);
     			float3 reflectedRay = reflect(normalize(view_pos), normal);
 
     			float3 hitp = 0;
     			float debug = 0;
-    			if(BinarySearch(view_pos, reflectedRay, hitp, debug))
+    			float2 hitPixel;
+    			float c= (i.uv.x + i.uv.y) * 0.25;
+    			//if(BinarySearch(view_pos, reflectedRay, hitp, debug))
     			//if(rayTrace1(view_pos, reflectedRay, hitp, debug))
+    			if(DDARayTrace(view_pos, reflectedRay, wnormal, c, hitPixel))
     			{
-    				float2 tuv = PosToUV(hitp);	
-    				float3 hitCol = tex2D (_CameraGBufferTexture0, tuv);
-    				float4 hitSpecA = tex2D (_CameraGBufferTexture1, tuv);
+    				//float2 tuv = PosToUV(hitp);
+    				float2 tuv = hitPixel * 0.5 + 0.5;	
+    				float3 hitCol = tex2D (_MainTex, tuv);
     				float3 _normal = tex2D (_CameraGBufferTexture2, tuv).xyz * 2.0 - 1.0;
     				//col = abs(debug) * 50;
     				//col = fixed4(_normal,1);
