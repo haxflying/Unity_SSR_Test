@@ -6,107 +6,101 @@ using UnityEngine;
 [ImageEffectAllowedInSceneView]
 public class ImageEffects : MonoBehaviour {
 
-    public Material std;
-
+    [Header("SSR")]
     public Shader ssrShader;
+    public Shader blurShader;
+    public Shader combineShader;
     [Range(0, 0.1f)]
     public float epsion = 0.05f;
-    [Range(1, 60)]
-    public int it_count = 10;
-    [Range(1, 40)]
-    public int bs_it_count = 5;
-    [Range(0, 1f)]
+    [Range(0, 0.1f)]
     public float stepSize;
     [Range(1f, 50f)]
     public float maxLength = 10;
+    [Header("Blur")]
+    [Range(0, 4)]
+    public int iterations = 3;
+    [Range(0.2f, 3.0f)]
+    public float blurSpread = 0.6f;
+    [Range(1, 8)]
+    public int downSample = 2;
 
-    private Material mat;
-
+    private Material reflectMat, blurMat, combineMat;
     private Camera cam;
 
     private void Start()
     {
-        mat = new Material(ssrShader);
+        reflectMat = new Material(ssrShader);
+        blurMat = new Material(blurShader);
+        combineMat = new Material(combineShader);
         cam = Camera.main;
     }
 
     private void OnRenderImage(RenderTexture src, RenderTexture dst)
     {
-        if(mat == null)
+        if (combineMat != null)
         {
-            Graphics.Blit(src, dst);
+            RenderTexture original_scene = RenderTexture.GetTemporary(src.width, src.height, 0);
+            Graphics.Blit(src, original_scene);
+
+            RenderTexture b4_blur_refl = RenderTexture.GetTemporary(src.width, src.height, 0, RenderTextureFormat.ARGB32);
+
+            if (reflectMat == null)
+            {
+                Graphics.Blit(src, dst);
+            }
+            else
+            {
+                reflectMat.SetFloat("_MaxLength", maxLength);
+                reflectMat.SetFloat("EPSION", epsion);
+                reflectMat.SetFloat("_StepSize", stepSize);
+                reflectMat.SetMatrix("_NormalMatrix", Camera.current.worldToCameraMatrix);               
+                Graphics.Blit(src, b4_blur_refl, reflectMat, 0);
+            }
+
+            if (blurMat != null)
+            {
+                int rtW = b4_blur_refl.width / downSample;
+                int rtH = b4_blur_refl.height / downSample;
+
+                RenderTexture buffer0 = RenderTexture.GetTemporary(rtW, rtH, 0, RenderTextureFormat.ARGB32);
+                buffer0.filterMode = FilterMode.Bilinear;
+
+                Graphics.Blit(b4_blur_refl, buffer0);
+
+                for (int i = 0; i < iterations; i++)
+                {
+                    
+                    blurMat.SetFloat("_BlurSize", 1.0f + i * blurSpread);
+                    RenderTexture buffer1 = RenderTexture.GetTemporary(rtW, rtH, 0, RenderTextureFormat.ARGB32);
+
+                    Graphics.Blit(buffer0, buffer1, blurMat, 0);
+
+                    RenderTexture.ReleaseTemporary(buffer0);
+                    buffer0 = buffer1;
+                    buffer1 = RenderTexture.GetTemporary(rtW, rtH, 0);
+
+                    Graphics.Blit(buffer0, buffer1, blurMat, 1);
+
+                    RenderTexture.ReleaseTemporary(buffer0);
+                    buffer0 = buffer1;
+                }
+                RenderTexture after_blur_refl = RenderTexture.GetTemporary(buffer0.width, buffer0.height, 0, RenderTextureFormat.ARGB32);
+
+                Graphics.Blit(buffer0, after_blur_refl);
+                RenderTexture.ReleaseTemporary(buffer0);
+
+                combineMat.SetTexture("_b4Blur", b4_blur_refl);
+                combineMat.SetTexture("_gbuffer3", original_scene);
+                Graphics.Blit(after_blur_refl, dst, combineMat);
+
+                RenderTexture.ReleaseTemporary(original_scene);
+                RenderTexture.ReleaseTemporary(b4_blur_refl);
+                RenderTexture.ReleaseTemporary(after_blur_refl);
+            }
         }
         else
         {
-            mat.SetInt("MAX_IT_COUNT", it_count);
-            mat.SetInt("MAX_BS_IT", bs_it_count); 
-            mat.SetFloat("_MaxLength", maxLength);
-            mat.SetFloat("EPSION", epsion);
-            mat.SetFloat("_StepSize", stepSize);
-            mat.SetMatrix("_NormalMatrix", Camera.current.worldToCameraMatrix);
-            Graphics.Blit(src, dst, mat, 0);
+            Graphics.Blit(src, dst);
         }
-    }
-
-    void RaycastCornerBlit(RenderTexture source, RenderTexture dest, Material mat)
-    {
-        // Compute Frustum Corners
-        float camFar = cam.farClipPlane;
-        float camFov = cam.fieldOfView;
-        float camAspect = cam.aspect;
-
-        float fovWHalf = camFov * 0.5f;
-
-        Vector3 toRight = cam.transform.right * Mathf.Tan(fovWHalf * Mathf.Deg2Rad) * camAspect;
-        Vector3 toTop = cam.transform.up * Mathf.Tan(fovWHalf * Mathf.Deg2Rad);
-
-        Vector3 topLeft = (cam.transform.forward - toRight + toTop);
-        float camScale = topLeft.magnitude * camFar;
-
-        topLeft.Normalize();
-        topLeft *= camScale;
-
-        Vector3 topRight = (cam.transform.forward + toRight + toTop);
-        topRight.Normalize();
-        topRight *= camScale;
-
-        Vector3 bottomRight = (cam.transform.forward + toRight - toTop);
-        bottomRight.Normalize();
-        bottomRight *= camScale;
-
-        Vector3 bottomLeft = (cam.transform.forward - toRight - toTop);
-        bottomLeft.Normalize();
-        bottomLeft *= camScale;
-
-        // Custom Blit, encoding Frustum Corners as additional Texture Coordinates
-        RenderTexture.active = dest;
-
-        mat.SetTexture("_MainTex", source);
-
-        GL.PushMatrix();
-        GL.LoadOrtho();
-
-        mat.SetPass(0);
-
-        GL.Begin(GL.QUADS);
-
-        GL.MultiTexCoord2(0, 0.0f, 0.0f);
-        GL.MultiTexCoord(1, bottomLeft);
-        GL.Vertex3(0.0f, 0.0f, 0.0f);
-
-        GL.MultiTexCoord2(0, 1.0f, 0.0f);
-        GL.MultiTexCoord(1, bottomRight);
-        GL.Vertex3(1.0f, 0.0f, 0.0f);
-
-        GL.MultiTexCoord2(0, 1.0f, 1.0f);
-        GL.MultiTexCoord(1, topRight);
-        GL.Vertex3(1.0f, 1.0f, 0.0f);
-
-        GL.MultiTexCoord2(0, 0.0f, 1.0f);
-        GL.MultiTexCoord(1, topLeft);
-        GL.Vertex3(0.0f, 1.0f, 0.0f);
-
-        GL.End();
-        GL.PopMatrix();
     }
 }

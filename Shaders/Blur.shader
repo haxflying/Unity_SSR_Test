@@ -1,58 +1,93 @@
-﻿Shader "Hidden/Blur"
+﻿// Upgrade NOTE: replaced 'mul(UNITY_MATRIX_MVP,*)' with 'UnityObjectToClipPos(*)'
+
+Shader "Hidden/Blur"
 {
-	Properties
-	{
-		_MainTex ("Texture", 2D) = "white" {}
+	Properties {
+		_MainTex ("Base (RGB)", 2D) = "white" {}
+		_BlurSize ("Blur Size", Float) = 1.0
 	}
-	SubShader
-	{
-		// No culling or depth
-		Cull Off ZWrite Off ZTest Always
+	SubShader {
+		CGINCLUDE
+		
+		#include "UnityCG.cginc"
+		
+		sampler2D _MainTex; 
+		half4 _MainTex_TexelSize;
+		float _BlurSize;
+		  
+		struct v2f {
+			float4 pos : SV_POSITION;
+			half2 uv[5]: TEXCOORD0;
+		};
+		  
+		v2f vertBlurVertical(appdata_img v) {
+			v2f o;
+			o.pos = UnityObjectToClipPos(v.vertex);
+			
+			half2 uv = v.texcoord;
+			float size = _BlurSize;
+			o.uv[0] = uv;
+			o.uv[1] = uv + float2(0.0, _MainTex_TexelSize.y * 1.0) * size ;
+			o.uv[2] = uv - float2(0.0, _MainTex_TexelSize.y * 1.0) * size ;
+			o.uv[3] = uv + float2(0.0, _MainTex_TexelSize.y * 2.0) * size ;
+			o.uv[4] = uv - float2(0.0, _MainTex_TexelSize.y * 2.0) * size ;
+					 
+			return o;
+		}
+		
+		v2f vertBlurHorizontal(appdata_img v) {
+			v2f o;
+			o.pos = UnityObjectToClipPos(v.vertex);
+			
+			half2 uv = v.texcoord;
+			float size = _BlurSize;
+			o.uv[0] = uv;
+			o.uv[1] = uv + float2(_MainTex_TexelSize.x * 1.0, 0.0) * size ;
+			o.uv[2] = uv - float2(_MainTex_TexelSize.x * 1.0, 0.0) * size ;
+			o.uv[3] = uv + float2(_MainTex_TexelSize.x * 2.0, 0.0) * size ;
+			o.uv[4] = uv - float2(_MainTex_TexelSize.x * 2.0, 0.0) * size ;
+					 
+			return o;
+		}
+		
+		fixed4 fragBlur(v2f i) : SV_Target {
+			float weight[3] = {0.4026, 0.2442, 0.0545};
+			
+			fixed4 col = tex2D(_MainTex, i.uv[0]);
+			fixed4 sum = col * weight[0];					
 
-		Pass
-		{
+			for (int it = 1; it < 3; it++) {				
+				sum += tex2D(_MainTex, i.uv[it*2-1]) * weight[it];
+				sum += tex2D(_MainTex, i.uv[it*2]) * weight[it];
+			}			
+			return sum;
+		}
+		    
+		ENDCG
+		
+		ZTest Always Cull Off ZWrite Off
+		
+		Pass {
+			NAME "GAUSSIAN_BLUR_VERTICAL"
+			
 			CGPROGRAM
-			#pragma vertex vert
-			#pragma fragment frag
+			  
+			#pragma vertex vertBlurVertical  
+			#pragma fragment fragBlur
+			  
+			ENDCG  
+		}
+		
+		Pass {  
+			NAME "GAUSSIAN_BLUR_HORIZONTAL"
 			
-			#include "UnityCG.cginc"
-			#include "UnityDeferredLibrary.cginc"
-
-			sampler2D _CameraGBufferTexture0;// Diffuse RGB, Occlusion A
-			sampler2D _CameraGBufferTexture1;// Specular RGB, Smoothness A
-			sampler2D _CameraGBufferTexture2;// Normal RGB
-			sampler2D _CameraGBufferTexture3;
-			struct appdata
-			{
-				float4 vertex : POSITION;
-				float2 uv : TEXCOORD0;
-			};
-
-			struct v2f
-			{
-				float2 uv : TEXCOORD0;
-				float4 vertex : SV_POSITION;
-			};
-
-			v2f vert (appdata v)
-			{
-				v2f o;
-				o.vertex = UnityObjectToClipPos(v.vertex);
-				o.uv = v.uv;
-				return o;
-			}
+			CGPROGRAM  
 			
-			sampler2D _MainTex;
-
-			fixed4 frag (v2f i) : SV_Target
-			{
-				fixed4 col = tex2Dlod(_CameraGBufferTexture3, half4(i.uv,0,5));
-				float4 x = ddx(col);
-				float4 y = ddy(col);
-				col += (x + y) * 5;
-				return col;
-			}
+			#pragma vertex vertBlurHorizontal  
+			#pragma fragment fragBlur
+			
 			ENDCG
 		}
-	}
+	} 
+	FallBack "Diffuse"
 }

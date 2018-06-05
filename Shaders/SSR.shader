@@ -157,12 +157,12 @@ Shader "Hidden/SSR"
     			return abs(zb + depth) < EPSION && dot(worldnormal, pNormal) < 0.9;
 			}
 
-			bool DDARayTrace(float3 o, float3 r, float3 normal, float jitter, out float2 hitPixel)
+			bool DDARayTrace(float3 o, float3 r, float3 normal, float jitter, out float2 hitPixel, out float length)
 			{
 				//Clip to near plane
 				float rayLength = ((o.z + r.z * _MaxLength) > -_ProjectionParams.y) ?
 				(-_ProjectionParams.y - o.z) / r.z : _MaxLength;
-				float3 end = o + r * _MaxLength;
+				float3 end = o + r * rayLength;
 
 				float4 h0 = mul(unity_CameraProjection, float4(o, 1));
 				float4 h1 = mul(unity_CameraProjection, float4(end, 1));
@@ -203,6 +203,7 @@ Shader "Hidden/SSR"
 					k += dk;
 					zb = -1/k;
 					hitPixel = permute? p.yx : p;
+					length = i * _StepSize * invdx / rayLength * r;
 					intersect = isIntersectWithDepth(zb, normal, hitPixel);
 				}
 				return intersect;
@@ -240,7 +241,7 @@ Shader "Hidden/SSR"
 			
 			fixed4 frag (v2f i) : SV_Target
 			{
-				fixed4 col = tex2D(_MainTex, i.uv);
+				fixed4 col = 0;//tex2D(_MainTex, i.uv);
 				
 				float depth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, i.uv);
     			depth = Linear01Depth (depth);
@@ -253,18 +254,19 @@ Shader "Hidden/SSR"
     			float3 hitp = 0;
     			float debug = 0;
     			float2 hitPixel;
+    			float traceLength = 0;
     			float c= (i.uv.x + i.uv.y) * 0.25;
     			//if(BinarySearch(view_pos, reflectedRay, hitp, debug))
     			//if(rayTrace1(view_pos, reflectedRay, hitp, debug))
-    			if(DDARayTrace(view_pos, reflectedRay, wnormal, c, hitPixel))
+    			if(DDARayTrace(view_pos, reflectedRay, wnormal, c, hitPixel, traceLength))
     			{
     				//float2 tuv = PosToUV(hitp);
     				float2 tuv = hitPixel * 0.5 + 0.5;	
     				float3 hitCol = tex2D (_MainTex, tuv);
     				float3 _normal = tex2D (_CameraGBufferTexture2, tuv).xyz * 2.0 - 1.0;
-    				//col = abs(debug) * 50;
+    				//col = length(traceLength) * 300;
     				//col = fixed4(_normal,1);
-    				col += fixed4(hitCol, 1);
+    				col = fixed4(hitCol, length(traceLength) * 300);
     				//col += fixed4((hitCol + hitSpecA.rgb), 1);
     			}
     			return col;
